@@ -1,11 +1,28 @@
 sources:
-  - https://t.me/s/v2rayse
-  - https://t.me/s/ShadowrocketNG
-  - https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/vless.txt
-  - https://raw.githubusercontent.com/Leon406/SubCrawler/master/subs/vless.txt
-  - https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/vless.txt
-  - https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/vless
-  - https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub
-  - https://raw.githubusercontent.com/ntcparty/vless/main/README.md
-  - https://raw.githubusercontent.com/racevpn/vless/main/README.md
-  - https://4pda.to/forum/index.php?showtopic=1035271
+  # Telegram channels (public web mirror via /s)
+  - url: https://t.me/s/v2rayse
+    tag: telegram
+  - url: https://t.me/s/ShadowrocketNG
+    tag: telegram
+  - url: https://t.me/s/v2rayfree
+    tag: telegram
+  - url: https://t.me/s/freewireguard
+    tag: telegram
+
+  # Community forums / discussions
+  - url: https://4pda.to/forum/index.php?showtopic=1035271
+    tag: forum
+  - url: https://ntc.party/t/%D0%BF%D1%83%D0%B1%D0%BB%D0%B8%D1%87%D0%BD%D1%8B%D0%B5-v2ray-vmess-vless-%D0%BA%D0%BE%D0%BD%D1%84%D0%B8%D0%B3%D0%B8/6945
+    tag: forum
+
+  # GitHub aggregators (raw subscriptions)
+  - url: https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/vless.txt
+    tag: github
+  - url: https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/vless.txt
+    tag: github
+  - url: https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/vless
+    tag: github
+  - url: https://raw.githubusercontent.com/Leon406/SubCrawler/master/subs/vless.txt
+    tag: github
+  - url: https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub
+    tag: github

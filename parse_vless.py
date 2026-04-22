@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -8,31 +12,76 @@ from urllib.parse import parse_qs, unquote, urlparse
 import requests
 import yaml
 
-VLESS_REGEX = re.compile(r"vless://[^\s'\"]+")
+VLESS_REGEX = re.compile(r"vless://[^\s'\"<>]+", re.IGNORECASE)
+BASE64_BODY_RE = re.compile(r"^[A-Za-z0-9+/=_\s-]{40,}$")
 
 
-def load_sources(path: Path) -> List[str]:
+@dataclass
+class Source:
+    url: str
+    tag: str = "generic"
+
+
+def load_sources(path: Path) -> List[Source]:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
     if isinstance(data, list):
-        return [str(item) for item in data]
-    if isinstance(data, dict):
-        sources = data.get("sources", [])
-        return [str(item) for item in sources]
-    raise ValueError("Unsupported sources.yaml format")
+        return [Source(url=str(item)) for item in data]
+
+    if not isinstance(data, dict):
+        raise ValueError("Unsupported sources.yaml format")
+
+    raw_sources = data.get("sources", [])
+    sources: List[Source] = []
+    for item in raw_sources:
+        if isinstance(item, str):
+            sources.append(Source(url=item))
+        elif isinstance(item, dict) and item.get("url"):
+            sources.append(Source(url=str(item["url"]), tag=str(item.get("tag") or "generic")))
+    return sources
 
 
-def fetch_url(url: str, timeout: int = 15) -> str:
-    response = requests.get(
-        url,
-        timeout=timeout,
-        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
-    )
+def fetch_url(url: str, session: requests.Session, timeout: int = 20) -> str:
+    response = session.get(url, timeout=timeout, allow_redirects=True)
     response.raise_for_status()
+    response.encoding = response.encoding or "utf-8"
     return response.text
 
 
+def looks_like_base64_blob(text: str) -> bool:
+    compact = "".join(text.strip().split())
+    if len(compact) < 40:
+        return False
+    if not BASE64_BODY_RE.match(compact):
+        return False
+    return len(compact) % 4 == 0
+
+
+def decode_base64_blob(text: str) -> Optional[str]:
+    compact = "".join(text.strip().split())
+    try:
+        decoded = base64.b64decode(compact + "===", validate=False)
+        out = decoded.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    return out if "vless://" in out.lower() else None
+
+
 def extract_links(text: str) -> List[str]:
-    return [link.rstrip(").,]") for link in VLESS_REGEX.findall(text)]
+    links = [link.rstrip(").,]\"'>") for link in VLESS_REGEX.findall(text)]
+
+    decoded = decode_base64_blob(text) if looks_like_base64_blob(text) else None
+    if decoded:
+        links.extend([link.rstrip(").,]\"'>") for link in VLESS_REGEX.findall(decoded)])
+
+    unique: List[str] = []
+    seen = set()
+    for link in links:
+        if link in seen:
+            continue
+        seen.add(link)
+        unique.append(link)
+    return unique
 
 
 def split_host_port(hostport: str) -> Tuple[str, int]:
@@ -46,93 +95,131 @@ def split_host_port(hostport: str) -> Tuple[str, int]:
             port = rest[1:]
     elif ":" in hostport:
         host, port = hostport.rsplit(":", 1)
+
     if port is None:
         raise ValueError("Missing port")
-    return host, int(port)
+
+    value = int(port)
+    if value < 1 or value > 65535:
+        raise ValueError("Port out of range")
+    return host, value
+
+
+def parse_bool(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def parse_vless_link(link: str) -> Optional[Dict[str, object]]:
     parsed = urlparse(link)
-    if parsed.scheme != "vless":
+    if parsed.scheme.lower() != "vless":
         return None
     if "@" not in parsed.netloc:
         return None
-    uuid, hostport = parsed.netloc.split("@", 1)
+
+    raw_uuid, hostport = parsed.netloc.split("@", 1)
+    try:
+        user_uuid = str(uuid.UUID(raw_uuid.strip()))
+    except Exception:
+        return None
+
     host, port = split_host_port(hostport)
 
     params = parse_qs(parsed.query)
-    get_param = lambda key: (params.get(key) or [None])[0]
 
-    name = unquote(parsed.fragment) if parsed.fragment else f"vless-{host}:{port}"
-    name = name.strip() or f"vless-{host}:{port}"
+    def get_param(*keys: str) -> Optional[str]:
+        for key in keys:
+            values = params.get(key)
+            if values and values[0] != "":
+                return unquote(values[0]).strip()
+        return None
 
-    security = (get_param("security") or "").lower()
-    network = (get_param("type") or get_param("network") or "tcp").lower()
+    security = (get_param("security") or "none").lower()
+    network = (get_param("type", "network") or "tcp").lower()
     cipher = (get_param("encryption") or "none").lower()
-    allow_insecure = get_param("allowInsecure") or get_param("allowinsecure")
+
+    name = unquote(parsed.fragment or "").strip()
+    if not name:
+        name = f"vless-{host}:{port}"
 
     proxy: Dict[str, object] = {
         "name": name,
         "type": "vless",
         "server": host,
         "port": port,
-        "uuid": uuid,
-        "udp": True,
+        "uuid": user_uuid,
         "cipher": cipher,
+        "udp": True,
         "network": network,
     }
 
-    if security in {"tls", "reality", "xtls"}:
+    if security in {"tls", "xtls", "reality"}:
         proxy["tls"] = True
 
+    allow_insecure = parse_bool(get_param("allowInsecure", "allowinsecure"))
     if allow_insecure is not None:
-        proxy["skip-cert-verify"] = allow_insecure in {"1", "true", "yes"}
+        proxy["skip-cert-verify"] = allow_insecure
 
-    sni = get_param("sni") or get_param("peer")
-    if sni:
-        proxy["servername"] = sni
+    servername = get_param("sni", "servername", "peer")
+    if servername:
+        proxy["servername"] = servername
 
     alpn = get_param("alpn")
     if alpn:
         proxy["alpn"] = [item.strip() for item in alpn.split(",") if item.strip()]
 
-    fingerprint = get_param("fp")
+    fingerprint = get_param("fp", "fingerprint")
     if fingerprint:
-        proxy["fingerprint"] = fingerprint
+        proxy["client-fingerprint"] = fingerprint
 
     flow = get_param("flow")
     if flow:
         proxy["flow"] = flow
 
     if security == "reality":
-        reality_opts = {}
-        public_key = get_param("pbk") or get_param("publicKey")
-        short_id = get_param("sid") or get_param("shortId")
-        spider_x = get_param("spx") or get_param("spiderX")
-        if public_key:
-            reality_opts["public-key"] = public_key
-        if short_id:
+        reality_opts: Dict[str, object] = {}
+        if pbk := get_param("pbk", "publicKey"):
+            reality_opts["public-key"] = pbk
+        if short_id := get_param("sid", "shortId"):
             reality_opts["short-id"] = short_id
-        if spider_x:
+        if spider_x := get_param("spx", "spiderX"):
             reality_opts["spider-x"] = spider_x
         if reality_opts:
             proxy["reality-opts"] = reality_opts
 
     if network == "ws":
         ws_opts: Dict[str, object] = {}
-        path = get_param("path")
-        if path:
-            ws_opts["path"] = unquote(path)
-        host_header = get_param("host")
-        if host_header:
+        if path := get_param("path"):
+            ws_opts["path"] = path
+        if host_header := get_param("host"):
             ws_opts["headers"] = {"Host": host_header}
         if ws_opts:
             proxy["ws-opts"] = ws_opts
 
     if network == "grpc":
-        service_name = get_param("serviceName") or get_param("service_name")
-        if service_name:
-            proxy["grpc-opts"] = {"grpc-service-name": service_name}
+        grpc_opts: Dict[str, object] = {}
+        if service_name := get_param("serviceName", "service_name"):
+            grpc_opts["grpc-service-name"] = service_name
+        multi_mode = parse_bool(get_param("mode"))
+        if multi_mode is not None:
+            grpc_opts["grpc-mode"] = "multi" if multi_mode else "gun"
+        if grpc_opts:
+            proxy["grpc-opts"] = grpc_opts
+
+    if network in {"http", "h2"}:
+        h2_opts: Dict[str, object] = {}
+        if path := get_param("path"):
+            h2_opts["path"] = path
+        if host_header := get_param("host"):
+            h2_opts["host"] = [item.strip() for item in host_header.split(",") if item.strip()]
+        if h2_opts:
+            proxy["h2-opts"] = h2_opts
 
     return proxy
 
@@ -146,7 +233,7 @@ def dedupe_proxies(proxies: Iterable[Dict[str, object]]) -> List[Dict[str, objec
             proxy.get("port"),
             proxy.get("uuid"),
             proxy.get("network"),
-            proxy.get("name"),
+            proxy.get("flow"),
         )
         if key in seen:
             continue
@@ -159,26 +246,30 @@ def ensure_unique_names(proxies: List[Dict[str, object]]) -> None:
     counts: Dict[str, int] = {}
     for proxy in proxies:
         name = str(proxy.get("name"))
-        if name not in counts:
-            counts[name] = 1
-            continue
-        counts[name] += 1
-        proxy["name"] = f"{name}-{counts[name]}"
+        counts[name] = counts.get(name, 0) + 1
+        if counts[name] > 1:
+            proxy["name"] = f"{name}-{counts[name]}"
 
 
 def build_output(proxies: List[Dict[str, object]]) -> Dict[str, object]:
-    return {"proxies": proxies}
+    return {
+        "meta": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(proxies),
+        },
+        "proxies": proxies,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Parse VLESS links from open sources and export Clash YAML."
+        description="Parse VLESS links from public sources and export Clash YAML."
     )
     parser.add_argument(
         "--sources",
         type=Path,
         default=Path("sources.yaml"),
-        help="Path to sources YAML file.",
+        help="Path to YAML with source URLs.",
     )
     parser.add_argument(
         "--output",
@@ -192,14 +283,18 @@ def main() -> None:
     if not sources:
         raise SystemExit("No sources found in sources.yaml")
 
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) parser/2.0"})
+
     all_links: List[str] = []
-    for url in sources:
+    for source in sources:
         try:
-            content = fetch_url(url)
+            content = fetch_url(source.url, session=session)
+            links = extract_links(content)
+            print(f"[ok] {source.url} ({source.tag}) -> {len(links)} links")
+            all_links.extend(links)
         except Exception as exc:
-            print(f"[warn] {url}: {exc}")
-            continue
-        all_links.extend(extract_links(content))
+            print(f"[warn] {source.url} ({source.tag}): {exc}")
 
     proxies: List[Dict[str, object]] = []
     for link in all_links:
@@ -218,7 +313,7 @@ def main() -> None:
         yaml.safe_dump(output, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    print(f"Saved {len(proxies)} proxies to {args.output}")
+    print(f"[done] wrote {len(proxies)} proxies to {args.output}")
 
 
 if __name__ == "__main__":
