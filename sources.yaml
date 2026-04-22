@@ -1,11 +1,16 @@
 sources:
-  - https://t.me/s/v2rayse
-  - https://t.me/s/ShadowrocketNG
-  - https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/vless.txt
-  - https://raw.githubusercontent.com/Leon406/SubCrawler/master/subs/vless.txt
-  - https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/vless.txt
-  - https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/vless
-  - https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub
-  - https://raw.githubusercontent.com/ntcparty/vless/main/README.md
-  - https://raw.githubusercontent.com/racevpn/vless/main/README.md
-  - https://4pda.to/forum/index.php?showtopic=1035271
+  - url: https://t.me/s/v2rayse
+    tag: telegram
+  - url: https://t.me/s/ShadowrocketNG
+    tag: telegram
+  - url: https://t.me/s/v2rayfree
+    tag: telegram
+
+  - url: https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/vless.txt
+    tag: github
+  - url: https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/vless.txt
+    tag: github
+  - url: https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/vless
+    tag: github
+  - url: https://raw.githubusercontent.com/Leon406/SubCrawler/master/subs/vless.txt
+    tag: github
